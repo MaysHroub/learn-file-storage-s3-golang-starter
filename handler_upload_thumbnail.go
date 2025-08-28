@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,14 +48,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	}
 	defer file.Close()
 
-	mediaType := header.Header.Get("Content-Type")
-
-	// data, err := io.ReadAll(file)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Unable to read file data", err)
-	// 	return
-	// }
-
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "No such video exists", err)
@@ -65,9 +58,18 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't parse the content-type header", err)
+		return
+	}
+	if mediaType != "image/jpeg" && mediaType != "image/png" {
+		respondWithError(w, http.StatusUnsupportedMediaType, "File format is not accepted", err)
+		return
+	}
 	fileExtension := strings.Split(mediaType, "/")[1]
-	videoPath := filepath.Join(cfg.assetsRoot, videoID.String() + "." + fileExtension)
-	videoFile, err := os.Create(videoPath)
+	videoFilePath := filepath.Join(cfg.assetsRoot, videoID.String() + "." + fileExtension)
+	videoFile, err := os.Create(videoFilePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create file", err)
 		return
