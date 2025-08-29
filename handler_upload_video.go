@@ -1,28 +1,31 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
-	maxLimit := 1 << 30 // 1GB
-	http.MaxBytesReader(w, nil, int64(maxLimit))
+	// set the upload limit
+	const uploadLimit = 1 << 30 // 1GB
+	r.Body = http.MaxBytesReader(w, r.Body, int64(uploadLimit))
+
+	// retreive the video id
 	videoIDString := r.PathValue("videoID")
 	videoID, err := uuid.Parse(videoIDString)
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "invalid video id", err)
 		return
 	}
+
+	// authenticate the user
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		respondWithError(w, http.StatusUnauthorized, "Couldn't find JWT", err)
@@ -35,28 +38,35 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	video, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't find video with given id", err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't find video with given id", err)
 		return
 	}
 	if userID != video.UserID {
 		respondWithError(w, http.StatusUnauthorized, "User is not the video owner", err)
 		return
 	}
+
+	// parse the file uploaded by html form named video
 	file, header, err := r.FormFile("video")
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't retrieve the file", err)
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse the file", err)
 		return
 	}
 	defer file.Close()
+
+	// extracts the media type and check its type
 	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't parse value of content type header", err)
 		return
 	}
 	if mediaType != "video/mp4" {
-		respondWithError(w, http.StatusBadRequest, "Media type is not a mp4 video", nil)
+		respondWithError(w, http.StatusBadRequest, "Invalid file type, only MP4 is allowed", nil)
 		return
 	}
+
+	// create a temp file to be read by s3 after copying the original file to it
+	// this is done because mulitpart.file is a one-read stream and you can't read it twice or adjust its pointer
 	tempfile, err := os.CreateTemp("", "tubely-upload.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create temp file", err)
@@ -64,8 +74,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	defer os.Remove(tempfile.Name())
 	defer tempfile.Close()
-	_, err = io.Copy(tempfile, file)
-	if err != nil {
+	if _, err = io.Copy(tempfile, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't copy file to tempfile", err)
 		return
 	}
@@ -74,21 +83,30 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't move the tempfile's pointer", err)
 		return
 	}
-	randomBytes := make([]byte, 32)
-	rand.Read(randomBytes)
-	randomKeyString := base64.RawURLEncoding.EncodeToString(randomBytes)
-	cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
-		Bucket:      &cfg.s3Bucket,
-		Key:         &randomKeyString,
+
+	// generate a random key for the s3 object
+	key := getAssetPath(mediaType)
+
+	// save the video to s3
+	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
+		Bucket:      aws.String(cfg.s3Bucket),
+		Key:         aws.String(key),
 		Body:        tempfile,
-		ContentType: &mediaType,
+		ContentType: aws.String(mediaType),
 	})
-	videoURL := fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, randomKeyString)
-	video.VideoURL = &videoURL
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't upload file to s3", err)
+		return
+	}
+
+	// update the url of the video uploaded to s3
+	url := cfg.getS3ObjectURL(key)
+	video.VideoURL = &url
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't save video metadata to db", err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+
+	respondWithJSON(w, http.StatusOK, video)
 }

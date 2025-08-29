@@ -28,7 +28,7 @@ func (cfg apiConfig) getLocalAssetURL(assetPath string) string {
 	return fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, assetPath)
 }
 
-func generateAssetPath(mediaType string) string {
+func getAssetPath(mediaType string) string {
 	base := make([]byte, 32)
 	_, err := rand.Read(base)
 	if err != nil {
