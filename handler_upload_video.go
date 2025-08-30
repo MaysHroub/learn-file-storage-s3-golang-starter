@@ -1,20 +1,15 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
 	"path"
-	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
-	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -141,8 +136,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// update the url of the video uploaded to s3
-	// url := cfg.getS3ObjectURL(key)
-	url := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
+	url := cfg.getS3ObjectURL(key)
 	video.VideoURL = &url
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
@@ -150,38 +144,5 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	videoWithPresignURL, err := cfg.dbVideoToSignedVideo(video)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Couldn't generate presign url for video", err)
-		return
-	}
-
-	respondWithJSON(w, http.StatusOK, videoWithPresignURL)
-}
-
-func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
-	if video.VideoURL == nil {
-		return video, nil
-	}
-	s3Info := strings.Split(*video.VideoURL, ",")
-	bucket, key := s3Info[0], s3Info[1]
-	urlExpireTime := 1 * time.Hour
-	presignURL, err := generatePresignedURL(cfg.s3Client, bucket, key, urlExpireTime)
-	if err != nil {
-		return video, err
-	}
-	video.VideoURL = &presignURL
-	return video, nil
-}
-
-func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
-	presignClient := s3.NewPresignClient(s3Client)
-	presignRequest, err := presignClient.PresignGetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-	}, s3.WithPresignExpires(expireTime))
-	if err != nil {
-		return "", err
-	}
-	return presignRequest.URL, nil
+	respondWithJSON(w, http.StatusOK, video)
 }
