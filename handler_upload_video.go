@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -84,8 +85,23 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// get video aspect ratio
+	aspectRatio, err := getVideoAspectRatio(tempfile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't get video's aspect ratio", err)
+		return
+	}
+
+	prefix := ""
+	switch aspectRatio {
+		case "16:9": prefix = "landscape"
+		case "9:16": prefix = "portrait"
+		default: prefix = "other"
+	}
+
 	// generate a random key for the s3 object
 	key := getAssetPath(mediaType)
+	key = filepath.Join(prefix, key)
 
 	// save the video to s3
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{

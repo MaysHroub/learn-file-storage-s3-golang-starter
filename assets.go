@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -45,4 +48,52 @@ func getMediaTypeExtension(mediaType string) string {
 		return ".bin"
 	}
 	return parts[1]
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command(
+		"ffprobe", 
+		"-v", "error", 
+		"-print_format", "json", 
+		"-show_streams", 
+		filePath,
+	)
+	var buffer bytes.Buffer
+	cmd.Stdout = &buffer
+	err := cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("ffprobe error: %w", err)
+	}
+	var output struct {
+		Streams []struct {
+			Width int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+	if err = json.Unmarshal(buffer.Bytes(), &output); err != nil {
+		return "", fmt.Errorf("couldn't parse the command's output: %w", err) 
+	}
+
+	if len(output.Streams) == 0 {
+		return "", fmt.Errorf("no video streams found")
+	}
+
+	width, height := output.Streams[0].Width, output.Streams[0].Height
+	gcd := gcd(width, height)
+	widthRatio := width / gcd 
+	heightRatio := height / gcd
+
+	return fmt.Sprintf("%d:%d", widthRatio, heightRatio), nil
+}
+
+func gcd(a, b int) int {
+	if b == 0 {
+		return 1
+ 	}
+	r := a % b 
+	for ; r != 0; {
+		a, b = b, r 
+		r = a % b
+	}
+	return b 
 }
