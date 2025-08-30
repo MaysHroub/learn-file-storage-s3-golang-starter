@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -75,10 +80,12 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 	defer os.Remove(tempfile.Name())
 	defer tempfile.Close()
+
 	if _, err = io.Copy(tempfile, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't copy file to tempfile", err)
 		return
 	}
+
 	_, err = tempfile.Seek(0, io.SeekStart)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't move the tempfile's pointer", err)
@@ -94,14 +101,17 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	prefix := ""
 	switch aspectRatio {
-		case "16:9": prefix = "landscape"
-		case "9:16": prefix = "portrait"
-		default: prefix = "other"
+	case "16:9":
+		prefix = "landscape"
+	case "9:16":
+		prefix = "portrait"
+	default:
+		prefix = "other"
 	}
 
 	// generate a random key for the s3 object
 	key := getAssetPath(mediaType)
-	key = filepath.Join(prefix, key)
+	key = path.Join(prefix, key)
 
 	// process the tempfile and use the processed version
 	processedFilePath, err := processVideoForFastStart(tempfile.Name())
@@ -110,6 +120,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer os.Remove(processedFilePath)
+
 	processedFile, err := os.Open(processedFilePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't open the processed file", err)
@@ -130,7 +141,8 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// update the url of the video uploaded to s3
-	url := cfg.getS3ObjectURL(key)
+	// url := cfg.getS3ObjectURL(key)
+	url := fmt.Sprintf("%s,%s", cfg.s3Bucket, key)
 	video.VideoURL = &url
 	err = cfg.db.UpdateVideo(video)
 	if err != nil {
@@ -138,5 +150,38 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, video)
+	videoWithPresignURL, err := cfg.dbVideoToSignedVideo(video)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't generate presign url for video", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, videoWithPresignURL)
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil {
+		return video, nil
+	}
+	s3Info := strings.Split(*video.VideoURL, ",")
+	bucket, key := s3Info[0], s3Info[1]
+	urlExpireTime := 1 * time.Hour
+	presignURL, err := generatePresignedURL(cfg.s3Client, bucket, key, urlExpireTime)
+	if err != nil {
+		return video, err
+	}
+	video.VideoURL = &presignURL
+	return video, nil
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	presignClient := s3.NewPresignClient(s3Client)
+	presignRequest, err := presignClient.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", err
+	}
+	return presignRequest.URL, nil
 }

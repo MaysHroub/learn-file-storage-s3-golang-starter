@@ -7,27 +7,25 @@ import (
 	"os/exec"
 )
 
-func processVideoForFastStart(filePath string) (string, error) {
-	processedFilepath := fmt.Sprintf("%s.processing", filePath)
-	cmd := exec.Command(
-		"ffmpeg",
-		"-i", filePath,
-		"-codec", "copy",
-		"-movflags", "faststart",
-		"-f", "mp4",
-		processedFilepath,
-	)
-	var stdErr bytes.Buffer
-	cmd.Stderr = &stdErr
+func processVideoForFastStart(inputFilePath string) (string, error) {
+	processedFilePath := fmt.Sprintf("%s.processing", inputFilePath)
+
+	cmd := exec.Command("ffmpeg", "-i", inputFilePath, "-movflags", "faststart", "-codec", "copy", "-f", "mp4", processedFilePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("failed to execute command ffmpeg: %w", err)
+		return "", fmt.Errorf("error processing video: %s, %v", stderr.String(), err)
 	}
-	fileInfo, err := os.Stat(processedFilepath)
+
+	fileInfo, err := os.Stat(processedFilePath)
 	if err != nil {
-		return "", fmt.Errorf("couldn't get the stat of processed file: %w", err)
+		return "", fmt.Errorf("could not stat processed file: %v", err)
 	}
 	if fileInfo.Size() == 0 {
 		return "", fmt.Errorf("processed file is empty")
 	}
-	return processedFilepath, nil 
+
+	return processedFilePath, nil
 }
+
